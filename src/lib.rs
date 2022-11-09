@@ -410,8 +410,8 @@ impl RadyOptions {
 pub fn read(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
     if dorade::is_dorade(path.as_ref()) {
         dorade::read_dorade(path, options)
-    } else if cfradial::is_cfradial() {
-        cfradial::read_cfradial(path)
+    // } else if cfradial::is_cfradial() {
+    //     cfradial::read_cfradial(path)
     } else {
         panic!("Unknown file format");
     }
