@@ -503,7 +503,7 @@ pub fn write(mut radar: RadarFile, path: impl AsRef<Path>, options: &RadyOptions
         match options.format {
             Format::NEXRAD => {
                 for sweep in &mut radar.sweeps {
-                    println!("{}", sweep.elevation);
+                    // println!("{}", sweep.elevation);
                     sweep.rays.iter_mut().for_each(|ray| {
                         ray.data.values_mut().for_each(|val| {
                             while val.len() % 2 != 0 {

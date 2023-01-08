@@ -237,7 +237,7 @@ fn create_new_file(
     let (date, time) = to_day_ms(sweep.time());
     let icao = string_to_bytes(&radar.name);
 
-    println!("writing");
+    // println!("writing");
 
     // Write the volume header
     let volume = VolumeHeader {
