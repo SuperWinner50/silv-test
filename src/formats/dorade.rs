@@ -434,7 +434,7 @@ pub struct QDAT {
 // Extra stuff block
 #[repr(C)]
 #[derive(Debug)]
-pub struct _XSTF {
+pub struct XSTF {
     id: [u8; 4],
     nbytes: u32,
     one: u32,
@@ -801,12 +801,15 @@ fn load_ray(
     let new_time: DateTime<Utc> = {
         let ymd = Utc.ymd(desc.start_time.year(), 1, 1).and_hms(0, 0, 0);
         let julian_day = (desc.start_time - ymd).num_days() + 1;
-        desc.start_time.date().and_hms_milli(
-            ryib.hour as u32,
-            ryib.minute as u32,
-            ryib.second as u32,
-            ryib.millisecond as u32,
-        ) + Duration::days(ryib.julian_day as i64 - julian_day)
+
+        let (mut hour, mut min, mut sec, mut milli) = (ryib.hour as u32, ryib.minute as u32, ryib.second as u32, ryib.millisecond as u32);
+
+        if hour * 60 * 60 * 1000 + min * 60 * 1000 + sec * 1000 + milli > 24 * 60 * 60 * 1000 {
+            (hour, min, sec, milli) = (0, 0, 0, 0);
+        }
+
+        desc.start_time.date().and_hms_milli(hour, min, sec, milli)
+             + Duration::days(ryib.julian_day as i64 - julian_day)
     };
 
     // If first ray in sweep
@@ -838,7 +841,7 @@ fn load_ray(
     };
 
     // Loop through each gate
-    while reader.next_string().unwrap() != "RYIB" && reader.next_string().unwrap() != "NULL" {
+    while !["RYIB", "NULL"].contains(&reader.next_string().unwrap().as_str()) {
         let min_offset: usize;
         let mut data_len: usize;
         let data_type: String;
@@ -856,6 +859,10 @@ fn load_ray(
                 min_offset = size_of::<QDAT>();
                 data_len = qdat.nbytes as usize;
                 data_type = dorade_to_generic_name(qdat.pdata_name.as_string().unwrap());
+            }
+            "XSTF" => {
+                consume_block!(reader, XSTF);
+                continue;
             }
             _ => panic!(
                 "Unexpected data block format: {}, bytes: {:x?}",
