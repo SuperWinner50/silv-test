@@ -536,6 +536,7 @@ struct DoradeDesc {
     parm_desc: HashMap<String, ParmDesc>,
     ngates: u16,
     compress: u16,
+    scan_mode: ScanMode,
 }
 
 macro_rules! consume_block {
@@ -646,7 +647,6 @@ pub fn read_dorade(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
         name: sswb.radar_name.as_string().unwrap(),
         sweeps: Vec::new(),
         params: HashMap::new(),
-        scan_mode: ScanMode::PPI,
     };
 
     let mut desc = DoradeDesc {
@@ -654,6 +654,7 @@ pub fn read_dorade(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
         parm_desc: HashMap::new(),
         ngates: 0,
         compress: 0,
+        scan_mode: ScanMode::PPI,
     };
 
     load_sensor(&mut reader, &mut radar, &mut desc);
@@ -679,7 +680,7 @@ fn load_sensor(reader: &mut File, radar: &mut RadarFile, desc: &mut DoradeDesc) 
     }
 
     let radd = consume_block!(reader, RADD);
-    radar.scan_mode = ScanMode::from_num(radd.scan_mode);
+    desc.scan_mode = ScanMode::from_num(radd.scan_mode);
 
     desc.compress = radd.data_compress;
 
@@ -776,6 +777,7 @@ fn load_sweep(
 ) {
     let _swib = consume_block!(reader, SWIB);
     let mut sweep = Sweep::default();
+    sweep.scan_mode = desc.scan_mode;
 
     // sweep.sweep_num = radar.sweeps.len() as u32;
 

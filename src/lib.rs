@@ -49,9 +49,10 @@ impl Format {
 // pub static radar_abreivations: HashMap<&str, &str> = HashMap::from([])
 
 /// Scan mode of a radar
-#[derive(Clone)]
+#[derive(Copy, Clone, PartialEq, Eq, Default)]
 pub enum ScanMode {
     Calibration,
+    #[default]
     PPI,
     Coplane,
     RHI,
@@ -107,6 +108,9 @@ pub struct Sweep {
 
     /// Nyquist velocity for the sweep
     pub nyquist_velocity: f32,
+
+    /// Scanning mode
+    pub scan_mode: ScanMode,
 }
 
 impl Sweep {
@@ -210,9 +214,6 @@ pub struct RadarFile {
 
     /// Hashmap of the field names and the description of the field
     pub params: HashMap<String, ParamDescription>,
-
-    /// Scanning mode
-    pub scan_mode: ScanMode,
 }
 
 impl RadarFile {
@@ -454,7 +455,6 @@ pub fn write(mut radar: RadarFile, path: impl AsRef<Path>, options: &RadyOptions
             name: radar.name.clone(),
             sweeps: Vec::new(),
             params: radar.params.clone(),
-            scan_mode: radar.scan_mode.clone(),
         };
 
         let mut new_ops = (*options).clone();
@@ -490,7 +490,6 @@ pub fn write(mut radar: RadarFile, path: impl AsRef<Path>, options: &RadyOptions
                 name: radar.name.clone(),
                 sweeps: vec![sweep],
                 params: radar.params.clone(),
-                scan_mode: radar.scan_mode.clone(),
             };
 
             let mut new_ops = (*options).clone();
