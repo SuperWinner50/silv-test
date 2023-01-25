@@ -183,6 +183,38 @@ fn to_day_ms(datetime: DateTime<Utc>) -> (u32, u32) {
     )
 }
 
+macro_rules! consume_block {
+    ($reader:expr, $struc:ty) => {{
+        const N: usize = size_of::<$struc>();
+        let mut new_struc: $struc = unsafe { std::mem::zeroed() };
+
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(&mut new_struc as *mut _ as *mut u8, N);
+            $reader.read_exact(slice).unwrap();
+        }
+
+        new_struc
+    }};
+}
+
+macro_rules! consume {
+    ($reader:expr, $len:expr) => {{
+        let mut buf = vec![0; len];
+        $reader.read_exact(&mut buf).unwrap();
+
+        buf
+    }};
+}
+
+fn read_nexrad(path: impl AsRef<Path>, options: &RadyOptions) {
+    let mut reader = std::io::BufReader::new(File::open(path).unwrap());
+
+    let vol_header = consume_block!(reader, VolumeHeader);
+    let compression_record = consume!(reader, 12);
+    
+
+}
+
 /// Function to write a nexrad file
 pub fn write_nexrad(radar: &RadarFile, path: impl AsRef<Path>, options: &RadyOptions) {
     let mut writer = create_new_file(path, radar, 0, options);
