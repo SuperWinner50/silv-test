@@ -2,9 +2,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde::Serialize;
 use std::convert::TryInto;
 use std::fs::File;
-use std::{io::Write, path::Path};
+use std::{io::{Read, Write}, path::Path};
 
-use crate::{Format, RadarFile, RadyOptions, Sweep};
+use crate::{Format, RadarFile, RadyOptions, Sweep, Ray};
 
 use bincode::{DefaultOptions, Options};
 
@@ -58,15 +58,12 @@ struct Msg31Header {
     radial_blanking: u8,
     azimuth_mode: u8,
     block_count: u16,
-    block_pointer_0: u32,
-    block_pointer_1: u32,
-    block_pointer_2: u32,
-    block_pointer_3: u32,
-    block_pointer_4: u32,
-    block_pointer_5: u32,
-    block_pointer_6: u32,
-    block_pointer_7: u32,
-    block_pointer_8: u32,
+}
+
+#[repr(C)]
+#[derive(Serialize)]
+struct BlockPtrs {
+    pts: Vec<u32>,
 }
 
 #[repr(C)]
@@ -184,6 +181,20 @@ fn to_day_ms(datetime: DateTime<Utc>) -> (u32, u32) {
 }
 
 macro_rules! consume_block {
+    ($reader:expr, BlockPtrs, $len:expr) => {{
+        const N: usize = size_of::<u32>();
+        let mut ptrs = vec![u32; N * len];
+
+        unsafe {
+            let slice = std::slice::from_raw_parts_mut(&mut new_struc as *mut _ as *mut u8, N);
+            $reader.read_exact(slice).unwrap();
+        }
+
+        BlockPtrs {
+            ptrs
+        }
+    }};
+    
     ($reader:expr, $struc:ty) => {{
         const N: usize = size_of::<$struc>();
         let mut new_struc: $struc = unsafe { std::mem::zeroed() };
@@ -204,16 +215,90 @@ macro_rules! consume {
 
         buf
     }};
+
+    ($reader:expr, $len:expr, $ty:ty) => {{
+        let mut buf = vec![0; len * std::mem::size_of::<$ty>()];
+        $reader.read_exact(&mut buf).unwrap();
+        buf.chunks_exact(std::mem::size_of::<$ty>())
+            .map(|v| <$ty>::from_le_bytes(v.try_into().unwrap()))
+            .collect()
+    }};
 }
 
-fn read_nexrad(path: impl AsRef<Path>, options: &RadyOptions) {
-    let mut reader = std::io::BufReader::new(File::open(path).unwrap());
+/*
+fn read_nexrad(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
+    let mut reader = File::open(path).unwrap();
 
     let vol_header = consume_block!(reader, VolumeHeader);
     let compression_record = consume!(reader, 12);
+ 
+    let mut buf = Vec::new();
+
+    match compression_record[4..6] {
+        b"BZ" => panic!("BZ not supported"),
+        b"\x00\x00" | b"\t\x80" => reader.read_exact(&mut buf).unwrap(),
+        _ => panic!("Unknown compression record"),
+    }
+
+    let reader = buf.as_slice();
+
+    while reader.len() > 0 {
+        if let Some(ray) = read_ray(reader, &mut sweep) {
+
+        }
+    }
     
+    
+}
+
+fn read_ray(reader: &[u8], sweep: &mut Sweep) -> Option<Ray> {
+    let header = consume_block!(reader, MsgHeader);
+
+    if header.f_type != 31 {
+        return None;
+    }
+
+    let msg_31_header = consume_block!(reader.clone(), Msg31Header);
+    let ptrs = consume_block!(reader, BlockPtrs, msg_31_header.block_count as usize);
+
+    let mut ray = Ray::default();
+    ray.azimuth = msg_31_header.azimuth_angle;
+
+    for ptr in ptrs {
+        read_data_block(&reader.clone()[ptr..], sweep, &mut ray);
+    }
 
 }
+
+fn read_data_block(reader: &[u8], sweep: &mut Sweep, ray: &mut Ray) -> RadarFile {
+    match &consume!(reader.clone(), 4).as_slice()[1..4] {
+        b"VOL" => {
+            let vol = consume_block!(reader, VolumeDataBlock);
+            sweep.latitude = vol.lat;
+            sweep.longitude = vol.lon;
+        }
+        b"ELV" => {
+            let elv = consume_block!(reader, ElevationDataBlock);
+            // sweep.nyquist_vel = elv.nyquist;
+        }
+        b"RAD" => {
+            let rad = consume_block!(reader, RadialDataBlock);
+            sweep.nyquist_velocity = rad.nyquist_vel;
+        }
+        name if [b"REF", b"VEL", b"SW", b"ZDR", b"PHI", b"RHO", b"CFP"].contains(name) => {
+            let data_block = consume_block!(reader, DataBlock);
+
+            let data = match data_block.word_size {
+                16 => consume!(reader, data_block.ngates as usize, u16).map(|v| v as f64).collect(),
+                8 => consume!(reader, data_block.ngates as usize, u8).map(|v| v as f64).collect(),
+                size => panic!("Unknown block size: {size}"),
+            };
+
+            ray.data.insert(name.to_string(), data);
+        }
+    }
+}
+*/
 
 /// Function to write a nexrad file
 pub fn write_nexrad(radar: &RadarFile, path: impl AsRef<Path>, options: &RadyOptions) {
@@ -338,18 +423,11 @@ fn pack_msg_31_header(radar: &RadarFile, sweep_index: usize, index: u16, ptrs: &
         radial_blanking: 0, // Check
         azimuth_mode: 0,
         block_count: 9,
-        block_pointer_0: ptrs[0],
-        block_pointer_1: ptrs[1],
-        block_pointer_2: ptrs[2],
-        block_pointer_3: ptrs[3],
-        block_pointer_4: ptrs[4],
-        block_pointer_5: ptrs[5],
-        block_pointer_6: ptrs[6],
-        block_pointer_7: ptrs[7],
-        block_pointer_8: ptrs[8],
     };
 
-    serialize(&block)
+    let mut bytes = serialize(&block);
+    bytes.extend(serialize(&ptrs[0..9].to_vec()));
+    bytes
 }
 
 /// Packs a msg header block
