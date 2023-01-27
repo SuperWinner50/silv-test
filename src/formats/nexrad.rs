@@ -1,23 +1,16 @@
 use chrono::{DateTime, TimeZone, Utc};
-use serde::Serialize;
+use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use std::convert::TryInto;
 use std::fs::File;
-use std::{io::{Read, Write}, path::Path};
+use std::{io::{Read, Write, Seek, SeekFrom}, path::Path};
+use std::collections::HashMap;
 
-use crate::{Format, RadarFile, RadyOptions, Sweep, Ray};
+use crate::{Format, RadarFile, RadyOptions, Sweep, Ray, ParamDescription};
 
 use bincode::{DefaultOptions, Options};
 
-pub fn serialize<S: serde::Serialize>(t: &S) -> Vec<u8> {
-    DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_big_endian()
-        .serialize(t)
-        .unwrap()
-}
-
 #[repr(C)]
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct VolumeHeader {
     tape: [u8; 9],
     extension: [u8; 3],
@@ -27,7 +20,7 @@ struct VolumeHeader {
 }
 
 #[repr(C)]
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct MsgHeader {
     size: u16,
     channels: u8,
@@ -40,7 +33,7 @@ struct MsgHeader {
 }
 
 #[repr(C)]
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Msg31Header {
     icao: [u8; 4],
     collect_ms: u32,
@@ -63,11 +56,11 @@ struct Msg31Header {
 #[repr(C)]
 #[derive(Serialize)]
 struct BlockPtrs {
-    pts: Vec<u32>,
+    ptrs: Vec<u32>,
 }
 
 #[repr(C)]
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct DataBlock {
     block_type: [u8; 1],
     data_name: [u8; 3],
@@ -84,7 +77,7 @@ struct DataBlock {
 }
 
 #[repr(C)]
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, Default)]
 struct VolumeDataBlock {
     block_type: [u8; 1],
     data_name: [u8; 3],
@@ -105,7 +98,7 @@ struct VolumeDataBlock {
 }
 
 #[repr(C)]
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ElevationDataBlock {
     block_name: [u8; 1],
     data_name: [u8; 3],
@@ -115,7 +108,7 @@ struct ElevationDataBlock {
 }
 
 #[repr(C)]
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct RadialDataBlock {
     block_name: [u8; 1],
     data_name: [u8; 3],
@@ -172,6 +165,15 @@ impl F64ToInt<u16> for f64 {
     }
 }
 
+/// Attributes that are stored per ray, but we want them to be stored per sweep
+#[derive(Debug, Clone, Copy, Default)]
+struct RayAttribs {
+    elev: f32,
+    nyq: f32,
+    lat: f32,
+    lon: f32,
+}
+
 /// Converts to the date and time format NEXRAD uses
 fn to_day_ms(datetime: DateTime<Utc>) -> (u32, u32) {
     (
@@ -182,11 +184,11 @@ fn to_day_ms(datetime: DateTime<Utc>) -> (u32, u32) {
 
 macro_rules! consume_block {
     ($reader:expr, BlockPtrs, $len:expr) => {{
-        const N: usize = size_of::<u32>();
-        let mut ptrs = vec![u32; N * len];
+        const N: usize = std::mem::size_of::<u32>();
+        let mut ptrs = vec![0; N * $len];
 
         unsafe {
-            let slice = std::slice::from_raw_parts_mut(&mut new_struc as *mut _ as *mut u8, N);
+            let slice = std::slice::from_raw_parts_mut(&mut ptrs as *mut _ as *mut u8, N);
             $reader.read_exact(slice).unwrap();
         }
 
@@ -196,7 +198,7 @@ macro_rules! consume_block {
     }};
     
     ($reader:expr, $struc:ty) => {{
-        const N: usize = size_of::<$struc>();
+        const N: usize = std::mem::size_of::<$struc>();
         let mut new_struc: $struc = unsafe { std::mem::zeroed() };
 
         unsafe {
@@ -210,95 +212,206 @@ macro_rules! consume_block {
 
 macro_rules! consume {
     ($reader:expr, $len:expr) => {{
-        let mut buf = vec![0; len];
+        let mut buf = vec![0; $len];
         $reader.read_exact(&mut buf).unwrap();
 
         buf
     }};
 
     ($reader:expr, $len:expr, $ty:ty) => {{
-        let mut buf = vec![0; len * std::mem::size_of::<$ty>()];
+        let mut buf = vec![0; $len * std::mem::size_of::<$ty>()];
         $reader.read_exact(&mut buf).unwrap();
         buf.chunks_exact(std::mem::size_of::<$ty>())
-            .map(|v| <$ty>::from_le_bytes(v.try_into().unwrap()))
-            .collect()
+            .map(|v| <$ty>::from_be_bytes(v.try_into().unwrap()))
+            .collect::<Vec<_>>()
     }};
 }
 
-/*
-fn read_nexrad(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
+pub fn serialize<S: Serialize>(t: &S) -> Vec<u8> {
+    DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_big_endian()
+        .serialize(t)
+        .unwrap()
+}
+
+pub fn deserialize<R: Read, S: DeserializeOwned>(t: R) -> S {
+    DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_big_endian()
+        .deserialize_from(t)
+        .unwrap()
+}
+
+pub fn deserialize_block<S: DeserializeOwned>(mut t: &mut &[u8]) -> S {
+    let lrtup = u16::from_be_bytes(t[4..6].try_into().unwrap()) as usize;
+
+    if lrtup > std::mem::size_of::<S>() {
+        let s: S = deserialize(&mut t);
+        consume!(t, lrtup - std::mem::size_of::<S>());
+        s
+    } else {
+        deserialize(&mut t)
+    }
+}
+
+pub fn is_nexrad(path: impl AsRef<Path>) -> bool {
+    // Checks if a file is in the nexrad format
+
+    let mut file = File::open(path).unwrap();
+
+    consume!(file, 4) == b"AR2V"
+}
+
+pub fn read_nexrad(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
     let mut reader = File::open(path).unwrap();
 
-    let vol_header = consume_block!(reader, VolumeHeader);
+    let vol_header: VolumeHeader = deserialize(&mut reader);
     let compression_record = consume!(reader, 12);
  
     let mut buf = Vec::new();
 
-    match compression_record[4..6] {
-        b"BZ" => panic!("BZ not supported"),
+    match &compression_record[4..6] {
+        b"BZ" => buf = decompress_records(reader),
         b"\x00\x00" | b"\t\x80" => reader.read_exact(&mut buf).unwrap(),
         _ => panic!("Unknown compression record"),
     }
 
-    let reader = buf.as_slice();
+    let mut reader = buf.as_slice();  
+
+    let mut params = HashMap::new();
+    let mut sweeps = Vec::new();
+    let mut sweep = Sweep::default();
+    let mut atts = RayAttribs::default();
 
     while reader.len() > 0 {
-        if let Some(ray) = read_ray(reader, &mut sweep) {
+        if let Some((ray, end)) = read_ray(&mut reader, &mut atts, &mut params) {
+            println!("{:?}", ray);
+            sweep.rays.push(ray);
 
+            if end {
+                sweep.latitude = atts.lat / sweep.rays.len() as f32;
+                sweep.longitude = atts.lon / sweep.rays.len() as f32;
+                sweep.nyquist_velocity = atts.nyq / sweep.rays.len() as f32;
+                sweep.elevation = atts.elev / sweep.rays.len() as f32;
+
+                sweeps.push(sweep);
+
+                atts = RayAttribs::default();
+                sweep = Sweep::default();
+            }
         }
     }
-    
-    
+
+    RadarFile {
+        name: String::from_utf8(vol_header.icao.to_vec()).unwrap(),
+        sweeps: vec![sweeps.last().unwrap().clone()],
+        params
+    }
 }
 
-fn read_ray(reader: &[u8], sweep: &mut Sweep) -> Option<Ray> {
-    let header = consume_block!(reader, MsgHeader);
+fn read_ray(mut reader: &mut &[u8], atts: &mut RayAttribs, params: &mut HashMap<String, ParamDescription>) -> Option<(Ray, bool)> {
+    let header: MsgHeader = deserialize(&mut reader);
 
     if header.f_type != 31 {
+        consume!(reader, 2432 - std::mem::size_of::<MsgHeader>());
         return None;
     }
 
-    let msg_31_header = consume_block!(reader.clone(), Msg31Header);
-    let ptrs = consume_block!(reader, BlockPtrs, msg_31_header.block_count as usize);
+    let msg_31_header: Msg31Header = deserialize(&mut reader);
+    let ptrs = consume!(reader, msg_31_header.block_count as usize, u32);
 
     let mut ray = Ray::default();
     ray.azimuth = msg_31_header.azimuth_angle;
+    atts.elev += msg_31_header.elevation_angle;
 
-    for ptr in ptrs {
-        read_data_block(&reader.clone()[ptr..], sweep, &mut ray);
+    // let mut skip = 0;
+
+    for ptr in ptrs.into_iter().filter(|&p| p > 0) {
+        let ptr = ptr as usize - std::mem::size_of::<Msg31Header>() - msg_31_header.block_count as usize * std::mem::size_of::<u32>();
+        let _ = read_data_block(&mut reader.split_at(ptr).1, atts, &mut ray, params);
     }
 
+    let skip = header.size as usize * 2 - 4 - std::mem::size_of::<Msg31Header>() - msg_31_header.block_count as usize * 4;
+
+    *reader = reader.split_at(std::cmp::min(skip, reader.len())).1;
+
+    Some((ray, msg_31_header.radial_status == 2 || msg_31_header.radial_status == 4))
 }
 
-fn read_data_block(reader: &[u8], sweep: &mut Sweep, ray: &mut Ray) -> RadarFile {
-    match &consume!(reader.clone(), 4).as_slice()[1..4] {
-        b"VOL" => {
-            let vol = consume_block!(reader, VolumeDataBlock);
-            sweep.latitude = vol.lat;
-            sweep.longitude = vol.lon;
+fn read_data_block(mut reader: &mut &[u8], atts: &mut RayAttribs, ray: &mut Ray, params: &mut HashMap<String, ParamDescription>) -> usize {
+    match std::str::from_utf8(&consume!(reader.clone(), 4)[1..4]).unwrap() {
+        "VOL" => {
+            let vol: VolumeDataBlock = deserialize_block(reader);
+            atts.lat += vol.lat;
+            atts.lon += vol.lon;
+            return std::mem::size_of::<VolumeDataBlock>();
         }
-        b"ELV" => {
-            let elv = consume_block!(reader, ElevationDataBlock);
-            // sweep.nyquist_vel = elv.nyquist;
+        "ELV" => {
+            let elv: ElevationDataBlock = deserialize_block(reader);
+            return std::mem::size_of::<ElevationDataBlock>();
         }
-        b"RAD" => {
-            let rad = consume_block!(reader, RadialDataBlock);
-            sweep.nyquist_velocity = rad.nyquist_vel;
+        "RAD" => {
+            let rad: RadialDataBlock = deserialize_block(reader);
+            atts.nyq += rad.nyquist_vel as f32 / 100.0;
+            return std::mem::size_of::<RadialDataBlock>();
         }
-        name if [b"REF", b"VEL", b"SW", b"ZDR", b"PHI", b"RHO", b"CFP"].contains(name) => {
-            let data_block = consume_block!(reader, DataBlock);
+        name if ["REF", "VEL", "SW ", "ZDR", "PHI", "RHO", "CFP"].contains(&name) => {
+            let name = name.trim().to_string();
+            
+            let data_block: DataBlock = deserialize(&mut reader);
+
+            if !params.contains_key(&name) {
+                params.insert(name.clone(), ParamDescription {
+                    meters_to_first_cell: data_block.first_gate as f32,
+                    meters_between_cells: data_block.gate_spacing as f32,
+                    ..Default::default()
+                });
+            }
+
+            let (scale, offset) = scale_offset(&name);
 
             let data = match data_block.word_size {
-                16 => consume!(reader, data_block.ngates as usize, u16).map(|v| v as f64).collect(),
-                8 => consume!(reader, data_block.ngates as usize, u8).map(|v| v as f64).collect(),
-                size => panic!("Unknown block size: {size}"),
+                16 => consume!(reader, data_block.ngates as usize, u16).into_iter().map(|v| ((v as f32 - offset) / scale) as f64).collect(),
+                8 => consume!(reader, data_block.ngates as usize, u8).into_iter().map(|v| ((v as f32 - offset) / scale) as f64).collect(),
+                size => panic!("Unknown word size {size}"),
             };
 
-            ray.data.insert(name.to_string(), data);
+            ray.data.insert(name, data);
+            return std::mem::size_of::<DataBlock>() + data_block.ngates as usize * data_block.word_size as usize / 8;
         }
+        name => panic!("Unknown product {name}"),
     }
 }
-*/
+
+fn decompress_records(mut reader: File) -> Vec<u8> {
+    reader.seek(SeekFrom::Current(-12)).unwrap();
+
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).unwrap();
+    let mut reader = buf.as_slice();
+
+    let mut decompressed_buf = Vec::new();
+
+    loop {
+        reader = reader.split_at(4).1;
+
+        let mut new_buf = Vec::new();
+        let mut decoder = bzip2::read::BzDecoder::new(reader);
+
+        decoder.read_to_end(&mut new_buf).unwrap();
+
+        reader = reader.split_at(decoder.total_in() as usize).1;
+
+        decompressed_buf.extend(new_buf);
+
+        if reader.len() == 0 {
+            break;
+        }
+    }
+
+    decompressed_buf[12..].to_vec()
+}
 
 /// Function to write a nexrad file
 pub fn write_nexrad(radar: &RadarFile, path: impl AsRef<Path>, options: &RadyOptions) {
@@ -353,8 +466,6 @@ fn create_new_file(
     let mut writer = File::create(file_name).unwrap();
     let (date, time) = to_day_ms(sweep.time());
     let icao = string_to_bytes(&radar.name);
-
-    // println!("writing");
 
     // Write the volume header
     let volume = VolumeHeader {
@@ -422,11 +533,14 @@ fn pack_msg_31_header(radar: &RadarFile, sweep_index: usize, index: u16, ptrs: &
         elevation_angle: sweep.elevation,
         radial_blanking: 0, // Check
         azimuth_mode: 0,
-        block_count: 9,
+        block_count: ptrs.len() as u16,
     };
 
     let mut bytes = serialize(&block);
-    bytes.extend(serialize(&ptrs[0..9].to_vec()));
+
+    let extra = 10 - ptrs.len();
+
+    bytes.extend(ptrs.iter().flat_map(|ptr| ptr.to_be_bytes().into_iter()).chain(std::iter::once(0).cycle().take(extra * 4)));
     bytes
 }
 
@@ -450,16 +564,19 @@ fn pack_msg_header(sweep: &Sweep, data_len: usize) -> Vec<u8> {
 
 /// Packs the data blocks
 fn pack_data(radar: &RadarFile, sweep_index: usize, index: usize) -> (Vec<u8>, Vec<u32>) {
-    let mut ptrs: Vec<u32> = vec![0x44, 0x70, 0x7C];
-    let mut next_ptr: u32 = 0x90;
+    let mut ptrs = Vec::new();;
+    // let mut next_ptr: u32 = 0x90;
+    let mut next_ptr = std::mem::size_of::<Msg31Header>() as u32 + 10 * 4;
     let mut data: Vec<u8> = Vec::new();
     let sweep = &radar.sweeps[sweep_index];
 
     for data_name in ["VOL", "ELV", "RAD"] {
+        ptrs.push(next_ptr);
+
         let mut new_data = match data_name {
-            "VOL" => pack_volume_block(sweep),
-            "ELV" => pack_elevation_block(),
-            "RAD" => pack_radial_block(sweep),
+            "VOL" => { next_ptr += std::mem::size_of::<VolumeDataBlock>() as u32; pack_volume_block(sweep) },
+            "ELV" => { next_ptr += std::mem::size_of::<ElevationDataBlock>() as u32; pack_elevation_block() },
+            "RAD" => { next_ptr += std::mem::size_of::<RadialDataBlock>() as u32; pack_radial_block(sweep) },
             _ => unreachable!(),
         };
 
@@ -467,7 +584,7 @@ fn pack_data(radar: &RadarFile, sweep_index: usize, index: usize) -> (Vec<u8>, V
     }
 
     for field in ["REF", "VEL", "SW", "RHO", "PHI", "ZDR"] {
-        if !radar.params.keys().cloned().any(|x| x == *field) {
+        if !sweep.rays[index].data.contains_key(field) {
             continue;
         }
 
@@ -488,7 +605,7 @@ fn pack_data(radar: &RadarFile, sweep_index: usize, index: usize) -> (Vec<u8>, V
         data.append(&mut vec![0u8; 12]);
     }
 
-    ptrs.resize(9, 0);
+    ptrs.resize(8, 0);
 
     (data, ptrs)
 }
@@ -529,9 +646,6 @@ where
     f64: F64ToInt<T>,
 {
     let data = sweep.rays[index].data.get(&field.to_string()).unwrap();
-    // if field == "REF" {
-    //     println!("{:?}", data);
-    // }
 
     let mut new_data: Vec<T> = Vec::with_capacity(data.len());
 
@@ -554,7 +668,7 @@ fn pack_volume_block(sweep: &Sweep) -> Vec<u8> {
     let block = VolumeDataBlock {
         block_type: *b"R",
         data_name: *b"VOL",
-        lrtup: 0x2C,
+        lrtup: std::mem::size_of::<VolumeDataBlock>() as u16,
         version_major: 0,
         version_minor: 0,
         lat: sweep.latitude,
@@ -567,7 +681,7 @@ fn pack_volume_block(sweep: &Sweep) -> Vec<u8> {
         diff_refl_calib: 0.0,
         init_phase: 0.0,
         vcp: 0,
-        spare: 0,
+        ..Default::default()
     };
 
     serialize(&block)
@@ -577,7 +691,7 @@ fn pack_elevation_block() -> Vec<u8> {
     let block = ElevationDataBlock {
         block_name: *b"R",
         data_name: *b"ELV",
-        lrtup: 0x0C,
+        lrtup: std::mem::size_of::<ElevationDataBlock>() as u16,
         atmos: 0,
         refl_calib: 0.0,
     };
@@ -589,7 +703,7 @@ fn pack_radial_block(sweep: &Sweep) -> Vec<u8> {
     let block = RadialDataBlock {
         block_name: *b"R",
         data_name: *b"RAD",
-        lrtup: 0x14,
+        lrtup: std::mem::size_of::<RadialDataBlock>() as u16,
         unambig_range: 0,
         noise_h: 0.0,
         noise_v: 0.0,

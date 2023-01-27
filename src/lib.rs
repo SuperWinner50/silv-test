@@ -413,6 +413,8 @@ pub fn read(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
         dorade::read_dorade(path, options)
     // } else if cfradial::is_cfradial() {
     //     cfradial::read_cfradial(path)
+    } else if nexrad::is_nexrad(path.as_ref()) {
+        nexrad::read_nexrad(path, options)
     } else {
         panic!("Unknown file format");
     }
