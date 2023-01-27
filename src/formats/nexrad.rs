@@ -286,7 +286,6 @@ pub fn read_nexrad(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
 
     while reader.len() > 0 {
         if let Some((ray, end)) = read_ray(&mut reader, &mut atts, &mut params) {
-            println!("{:?}", ray);
             sweep.rays.push(ray);
 
             if end {
@@ -305,7 +304,7 @@ pub fn read_nexrad(path: impl AsRef<Path>, options: &RadyOptions) -> RadarFile {
 
     RadarFile {
         name: String::from_utf8(vol_header.icao.to_vec()).unwrap(),
-        sweeps: vec![sweeps.last().unwrap().clone()],
+        sweeps,
         params
     }
 }
