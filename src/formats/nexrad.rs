@@ -371,8 +371,8 @@ fn read_data_block(mut reader: &mut &[u8], atts: &mut RayAttribs, ray: &mut Ray,
             let (scale, offset) = scale_offset(&name);
 
             let data = match data_block.word_size {
-                16 => consume!(reader, data_block.ngates as usize, u16).into_iter().map(|v| ((v as f32 - offset) / scale) as f64).collect(),
-                8 => consume!(reader, data_block.ngates as usize, u8).into_iter().map(|v| ((v as f32 - offset) / scale) as f64).collect(),
+                16 => consume!(reader, data_block.ngates as usize, u16).into_iter().map(|v| if v < 2 { f64::MIN } else { ((v as f32 - offset) / scale) as f64 }).collect(),
+                8 => consume!(reader, data_block.ngates as usize, u8).into_iter().map(|v| if v < 2 { f64::MIN } else { ((v as f32 - offset) / scale) as f64 }).collect(),
                 size => panic!("Unknown word size {size}"),
             };
 
