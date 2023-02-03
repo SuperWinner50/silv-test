@@ -546,7 +546,7 @@ fn pack_msg_header(sweep: &Sweep, data_len: usize) -> Vec<u8> {
     let (date, ms) = to_day_ms(sweep.time());
 
     let block = MsgHeader {
-        size: (std::mem::size_of::<Msg31Header>() + data_len + 4) as u16 / 2,
+        size: (std::mem::size_of::<Msg31Header>() + 9 * 4 + data_len + 4) as u16 / 2,
         channels: 0,
         f_type: 31,
         seq_id: 0,
