@@ -532,14 +532,12 @@ fn pack_msg_31_header(radar: &RadarFile, sweep_index: usize, index: u16, ptrs: &
         elevation_angle: sweep.elevation,
         radial_blanking: 0, // Check
         azimuth_mode: 0,
-        block_count: ptrs.len() as u16,
+        block_count: 9,
     };
 
     let mut bytes = serialize(&block);
 
-    let extra = 10 - ptrs.len();
-
-    bytes.extend(ptrs.iter().flat_map(|ptr| ptr.to_be_bytes().into_iter()).chain(std::iter::once(0).cycle().take(extra * 4)));
+    bytes.extend(ptrs.iter().flat_map(|ptr| ptr.to_be_bytes().into_iter()));
     bytes
 }
 
@@ -565,7 +563,7 @@ fn pack_msg_header(sweep: &Sweep, data_len: usize) -> Vec<u8> {
 fn pack_data(radar: &RadarFile, sweep_index: usize, index: usize) -> (Vec<u8>, Vec<u32>) {
     let mut ptrs = Vec::new();;
     // let mut next_ptr: u32 = 0x90;
-    let mut next_ptr = std::mem::size_of::<Msg31Header>() as u32 + 10 * 4;
+    let mut next_ptr = std::mem::size_of::<Msg31Header>() as u32 + 9 * 4;
     let mut data: Vec<u8> = Vec::new();
     let sweep = &radar.sweeps[sweep_index];
 
@@ -604,7 +602,7 @@ fn pack_data(radar: &RadarFile, sweep_index: usize, index: usize) -> (Vec<u8>, V
         data.append(&mut vec![0u8; 12]);
     }
 
-    ptrs.resize(8, 0);
+    ptrs.resize(9, 0);
 
     (data, ptrs)
 }
