@@ -22,7 +22,7 @@ impl ScanMode {
             8 => ScanMode::Surveillance,
             9 => ScanMode::Airborne,
             10 => ScanMode::Horizontal,
-            _ => panic!("Unkown scan mode format"),
+            x => panic!("Unkown scan mode format {x}"),
         }
     }
 }
